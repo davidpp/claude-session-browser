@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build binaries
+        run: |
+          # Create builds directory
+          mkdir -p builds
+          
+          # Build for different platforms
+          # macOS (Intel)
+          GOOS=darwin GOARCH=amd64 go build -o builds/claude-session-browser-darwin-amd64 .
+          
+          # macOS (Apple Silicon)
+          GOOS=darwin GOARCH=arm64 go build -o builds/claude-session-browser-darwin-arm64 .
+          
+          # Linux (amd64)
+          GOOS=linux GOARCH=amd64 go build -o builds/claude-session-browser-linux-amd64 .
+          
+          # Linux (arm64)
+          GOOS=linux GOARCH=arm64 go build -o builds/claude-session-browser-linux-arm64 .
+          
+          # Windows (amd64)
+          GOOS=windows GOARCH=amd64 go build -o builds/claude-session-browser-windows-amd64.exe .
+          
+          # Windows (arm64)
+          GOOS=windows GOARCH=arm64 go build -o builds/claude-session-browser-windows-arm64.exe .
+
+      - name: Create compressed archives
+        run: |
+          cd builds
+          
+          # Create tar.gz for Unix systems
+          tar -czf claude-session-browser-darwin-amd64.tar.gz claude-session-browser-darwin-amd64
+          tar -czf claude-session-browser-darwin-arm64.tar.gz claude-session-browser-darwin-arm64
+          tar -czf claude-session-browser-linux-amd64.tar.gz claude-session-browser-linux-amd64
+          tar -czf claude-session-browser-linux-arm64.tar.gz claude-session-browser-linux-arm64
+          
+          # Create zip for Windows
+          zip claude-session-browser-windows-amd64.zip claude-session-browser-windows-amd64.exe
+          zip claude-session-browser-windows-arm64.zip claude-session-browser-windows-arm64.exe
+          
+          # Remove uncompressed binaries
+          rm claude-session-browser-*[^.zip][^.gz]
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: builds/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

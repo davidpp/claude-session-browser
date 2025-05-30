@@ -1,0 +1,42 @@
+# Binaries
+claude-session-browser
+*.exe
+
+# Go build artifacts
+*.o
+*.a
+*.so
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Example data (contains sensitive information)
+example/
+
+# Local environment files
+.env
+.env.local
+
+# Claude specific
+.claude/
+
+# Build directories
+dist/
+builds/
