@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -9,10 +10,12 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/davidpaquet/claude-session-browser/internal/clipboard"
 	"github.com/davidpaquet/claude-session-browser/internal/model"
 	"github.com/davidpaquet/claude-session-browser/internal/parser"
+	"github.com/davidpaquet/claude-session-browser/internal/search"
 )
 
 // Model is the app model
@@ -32,6 +35,14 @@ type Model struct {
 	loading       bool
 	err           error
 	
+	// Search State
+	searchEngine     search.Engine
+	searchMode       bool
+	searchInput      textinput.Model
+	searchQuery      string
+	searchResults    []search.SearchResult
+	filteredSessions []model.SessionInfo
+	
 	// Status
 	statusMsg     string
 	statusTimer   time.Time
@@ -39,6 +50,12 @@ type Model struct {
 
 // NewApp creates a new app
 func NewApp(claudeDir string) *Model {
+	// Initialize search input
+	searchInput := textinput.New()
+	searchInput.Placeholder = "Search sessions..."
+	searchInput.CharLimit = 100
+	searchInput.Width = 30
+
 	return &Model{
 		parser:       parser.NewParser(),
 		clipboardMgr: clipboard.NewManager(),
@@ -46,6 +63,7 @@ func NewApp(claudeDir string) *Model {
 		loading:      true,
 		width:        80,
 		height:       24,
+		searchInput:  searchInput,
 	}
 }
 
@@ -70,11 +88,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.sessions[i].LastActive.After(m.sessions[j].LastActive)
 		})
 		
-		// Select first and load it
+		// Initialize search engine with sessions
 		if len(m.sessions) > 0 {
+			m.searchEngine = search.NewEngine(m.sessions)
+			m.filteredSessions = m.sessions // Initially show all sessions
+		}
+		
+		// Select first and load it
+		if len(m.filteredSessions) > 0 {
 			m.selected = 0
 			m.scrollOffset = 0 // Reset scroll
-			return m, m.loadFullSession(m.sessions[0].FilePath)
+			return m, m.loadFullSession(m.filteredSessions[0].FilePath)
 		}
 		return m, nil
 		
@@ -90,26 +114,102 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = ""
 		return m, nil
 		
+	case searchCompleteMsg:
+		// Ignore if search query has changed
+		if msg.query != m.searchQuery {
+			return m, nil
+		}
+		
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Search error: %v", msg.err)
+			m.statusTimer = time.Now()
+			return m, nil
+		}
+		
+		// Store search results
+		m.searchResults = msg.results
+		
+		// Update filtered sessions
+		m.filteredSessions = make([]model.SessionInfo, 0, len(msg.results))
+		for _, result := range msg.results {
+			if result.SessionIndex < len(m.sessions) {
+				m.filteredSessions = append(m.filteredSessions, m.sessions[result.SessionIndex])
+			}
+		}
+		
+		// Update status
+		if len(m.filteredSessions) == 0 {
+			m.statusMsg = fmt.Sprintf("No matches found for '%s'", m.searchQuery)
+		} else {
+			m.statusMsg = fmt.Sprintf("Found %d sessions matching '%s'", len(m.filteredSessions), m.searchQuery)
+		}
+		m.statusTimer = time.Now()
+		
+		// Reset selection and load first session if available
+		if len(m.filteredSessions) > 0 {
+			m.selected = 0
+			m.scrollOffset = 0
+			return m, m.loadFullSession(m.filteredSessions[0].FilePath)
+		}
+		
+		return m, nil
+		
 	case tea.KeyMsg:
+		// Handle search mode input first
+		if m.searchMode {
+			switch msg.String() {
+			case "esc":
+				m.exitSearchMode()
+				return m, nil
+			case "enter":
+				// Keep search active but update selection
+				m.exitSearchMode()
+				return m, nil
+			default:
+				// Update search input
+				var cmd tea.Cmd
+				m.searchInput, cmd = m.searchInput.Update(msg)
+				m.searchQuery = m.searchInput.Value()
+				
+				// Trigger async search
+				if m.searchQuery != "" {
+					m.statusMsg = "Searching..."
+					m.statusTimer = time.Now()
+					return m, tea.Batch(cmd, m.performSearchCmd())
+				} else {
+					// Clear search immediately if query is empty
+					m.filteredSessions = m.sessions
+					m.searchResults = nil
+					m.statusMsg = ""
+				}
+				return m, cmd
+			}
+		}
+
+		// Regular key handling
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+			
+		case "/":
+			m.enterSearchMode()
+			return m, textinput.Blink
 			
 		case "up", "k":
 			if m.selected > 0 {
 				m.selected--
 				m.ensureVisible()
-				if m.selected < len(m.sessions) {
-					return m, m.loadFullSession(m.sessions[m.selected].FilePath)
+				if m.selected < len(m.filteredSessions) {
+					return m, m.loadFullSession(m.filteredSessions[m.selected].FilePath)
 				}
 			}
 			
 		case "down", "j":
-			if m.selected < len(m.sessions)-1 {
+			if m.selected < len(m.filteredSessions)-1 {
 				m.selected++
 				m.ensureVisible()
-				if m.selected < len(m.sessions) {
-					return m, m.loadFullSession(m.sessions[m.selected].FilePath)
+				if m.selected < len(m.filteredSessions) {
+					return m, m.loadFullSession(m.filteredSessions[m.selected].FilePath)
 				}
 			}
 			
@@ -130,6 +230,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			
 		case "r":
 			m.loading = true
+			m.searchQuery = ""
+			m.searchMode = false
+			m.searchInput.SetValue("")
 			return m, m.loadSessions()
 		}
 	}
@@ -149,8 +252,12 @@ func (m *Model) View() string {
 	}
 	
 	// Calculate pane dimensions
-	// Reserve 1 for status bar (top margins are now in styles)
-	availableHeight := m.height - 1
+	// Reserve space for status bar and search bar if active
+	reservedHeight := 1 // status bar
+	if m.searchMode {
+		reservedHeight += 3 // search bar with border
+	}
+	availableHeight := m.height - reservedHeight
 	
 	// Fixed width for left pane (including margin)
 	leftWidth := 40
@@ -167,14 +274,21 @@ func (m *Model) View() string {
 	// Join horizontally with no gap
 	main := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
 	
+	// Add search bar if in search mode
+	components := []string{main}
+	if m.searchMode {
+		searchBar := m.renderSearchBar()
+		components = append(components, searchBar)
+	}
+	
 	// Add status bar
 	status := m.renderStatusBar()
+	components = append(components, status)
 	
 	// Final layout
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		main,
-		status,
+		components...,
 	)
 }
 
@@ -185,7 +299,11 @@ func (m *Model) renderSessionList(width, height int) string {
 	
 	// Build content
 	lines := []string{}
-	lines = append(lines, titleStyle.Render("Sessions"))
+	title := "Sessions"
+	if m.searchMode || m.searchQuery != "" {
+		title = fmt.Sprintf("Sessions (%d matches)", len(m.filteredSessions))
+	}
+	lines = append(lines, titleStyle.Render(title))
 	lines = append(lines, "")
 	
 	// Calculate how many items we can show (minus title and blank line)
@@ -195,7 +313,7 @@ func (m *Model) renderSessionList(width, height int) string {
 	}
 	
 	// Ensure scroll offset is valid
-	maxScroll := len(m.sessions) - itemsHeight
+	maxScroll := len(m.filteredSessions) - itemsHeight
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -209,12 +327,12 @@ func (m *Model) renderSessionList(width, height int) string {
 	// Render visible sessions
 	visibleStart := m.scrollOffset
 	visibleEnd := m.scrollOffset + itemsHeight
-	if visibleEnd > len(m.sessions) {
-		visibleEnd = len(m.sessions)
+	if visibleEnd > len(m.filteredSessions) {
+		visibleEnd = len(m.filteredSessions)
 	}
 	
 	for i := visibleStart; i < visibleEnd; i++ {
-		session := m.sessions[i]
+		session := m.filteredSessions[i]
 		
 		// Format relative time
 		timeStr := getRelativeTime(session.LastActive)
@@ -225,8 +343,20 @@ func (m *Model) renderSessionList(width, height int) string {
 			id = "..." + id[len(id)-21:]
 		}
 		
+		// Add match indicator if searching
+		matchIndicator := ""
+		if m.searchQuery != "" {
+			// Find match count for this session
+			for _, result := range m.searchResults {
+				if result.SessionID == session.ID {
+					matchIndicator = fmt.Sprintf(" [%d]", len(result.Matches))
+					break
+				}
+			}
+		}
+		
 		// Format line to fit within inner width
-		line := fmt.Sprintf("%-24s %s", id, timeStr)
+		line := fmt.Sprintf("%-24s%s %s", id, matchIndicator, timeStr)
 		if len(line) > innerWidth {
 			line = line[:innerWidth]
 		}
@@ -295,6 +425,47 @@ func (m *Model) renderDetails(width, height int) string {
 		lines = append(lines, "")
 	}
 	
+	// Show search matches if searching
+	if m.searchQuery != "" {
+		// Find matches for current session
+		var currentMatches []search.Match
+		for _, result := range m.searchResults {
+			if result.SessionID == m.fullSession.ID {
+				currentMatches = result.Matches
+				break
+			}
+		}
+		
+		if len(currentMatches) > 0 {
+			lines = append(lines, fmt.Sprintf("Search Matches (%d):", len(currentMatches)))
+			lines = append(lines, strings.Repeat("─", innerWidth-2))
+			
+			// Show up to 5 matches
+			shown := 0
+			for _, match := range currentMatches {
+				if shown >= 5 {
+					lines = append(lines, fmt.Sprintf("  ... and %d more matches", len(currentMatches)-shown))
+					break
+				}
+				
+				// Use context if available, otherwise fall back to text
+				displayText := match.Context
+				if displayText == "" {
+					displayText = strings.TrimSpace(match.Text)
+				}
+				
+				// Ensure it fits within width
+				if len(displayText) > innerWidth-4 {
+					displayText = displayText[:innerWidth-7] + "..."
+				}
+				
+				lines = append(lines, fmt.Sprintf("  %s", displayText))
+				shown++
+			}
+			lines = append(lines, "")
+		}
+	}
+	
 	// Resume command
 	lines = append(lines, "Resume:")
 	cmd := m.fullSession.GetResumeCommand()
@@ -354,11 +525,31 @@ func (m *Model) renderStatusBar() string {
 	// Show status message if present, otherwise show key hints
 	if m.statusMsg != "" && time.Since(m.statusTimer) < 3*time.Second {
 		content = infoStyle.Render(m.statusMsg)
+	} else if m.searchMode {
+		content = keyHelpStyle.Render("[Esc] Cancel  [Enter] Select  Type to search...")
 	} else {
-		content = keyHelpStyle.Render("[↑↓] Navigate  [Enter] Copy  [r] Refresh  [q] Quit")
+		content = keyHelpStyle.Render("[↑↓] Navigate  [Enter] Copy  [/] Search  [r] Refresh  [q] Quit")
 	}
 	
 	return statusBarStyle.Width(m.width).Render(content)
+}
+
+func (m *Model) renderSearchBar() string {
+	// Create search input with custom style
+	searchStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#9B59B6")). // Purple to match theme
+		Padding(0, 1).
+		Width(m.width - 2)
+	
+	searchIcon := "🔍 "
+	prompt := searchIcon + "Search: " + m.searchInput.View()
+	
+	if m.searchQuery != "" && len(m.filteredSessions) == 0 {
+		prompt += " (no matches)"
+	}
+	
+	return searchStyle.Render(prompt)
 }
 
 func (m *Model) ensureVisible() {
@@ -378,7 +569,7 @@ func (m *Model) ensureVisible() {
 	}
 	
 	// Ensure scroll offset is valid
-	maxScroll := len(m.sessions) - itemsHeight
+	maxScroll := len(m.filteredSessions) - itemsHeight
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -416,6 +607,12 @@ type fullSessionLoadedMsg struct {
 }
 
 type clearStatusMsg struct{}
+
+type searchCompleteMsg struct {
+	results []search.SearchResult
+	query   string
+	err     error
+}
 
 // Helper functions
 func wrapText(text string, width int) []string {
@@ -490,5 +687,47 @@ func getRelativeTime(t time.Time) string {
 			return "1 year ago"
 		}
 		return fmt.Sprintf("%d years ago", years)
+	}
+}
+
+// Search helper methods
+func (m *Model) enterSearchMode() {
+	m.searchMode = true
+	m.searchInput.Focus()
+	m.searchInput.SetValue("")
+	m.searchQuery = ""
+}
+
+func (m *Model) exitSearchMode() {
+	m.searchMode = false
+	m.searchInput.Blur()
+	m.searchQuery = ""
+	// Reset to show all sessions
+	m.filteredSessions = m.sessions
+	m.selected = 0
+	m.scrollOffset = 0
+}
+
+func (m *Model) performSearchCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.searchEngine == nil || m.searchQuery == "" {
+			return searchCompleteMsg{
+				results: []search.SearchResult{},
+				query:   m.searchQuery,
+				err:     nil,
+			}
+		}
+		
+		// Perform FULL TEXT SEARCH across all session content
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		
+		results, err := m.searchEngine.Search(ctx, m.searchQuery, search.SearchTypeContent)
+		
+		return searchCompleteMsg{
+			results: results,
+			query:   m.searchQuery,
+			err:     err,
+		}
 	}
 }

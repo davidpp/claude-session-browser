@@ -83,9 +83,21 @@ The app will automatically find your Claude sessions in `~/.claude/projects/`. I
 
 - `↑↓` or `j/k` - Navigate through sessions
 - `Enter` - Copy resume command to clipboard
+- `/` - Search sessions (full-text search in all messages)
+- `Esc` - Exit search mode
 - `r` - Refresh session list
 - `q` - Quit
 - `Ctrl+C` - Force quit
+
+### Search Feature
+
+The search feature performs full-text search across all messages in all sessions:
+- Press `/` to activate search mode
+- Type your search query
+- Results update in real-time
+- Shows match count `[n]` next to each session
+- View match previews in the details pane
+- Requires `ripgrep` (rg) to be installed for best performance
 
 ### Command Line Options
 

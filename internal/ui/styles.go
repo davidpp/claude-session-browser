@@ -24,6 +24,10 @@ var (
 
 	mutedTextStyle = lipgloss.NewStyle().
 		Foreground(mutedColor)
+	
+	highlightStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FBBF24")).
+		Bold(true)
 
 	// List styles
 	sessionListStyle = lipgloss.NewStyle().
