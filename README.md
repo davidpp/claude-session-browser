@@ -92,11 +92,25 @@ The app will automatically find your Claude sessions in `~/.claude/projects/`. I
 ### Search Feature
 
 The search feature performs full-text search across all messages in all sessions:
-- Press `/` to activate search mode
-- Type your search query
-- Results update in real-time
+
+**Search Modes:**
+- **Normal Mode**: Default view with all sessions
+- **Search Input Mode**: Typing your search query (bright purple border)
+- **Search Results Mode**: Navigating filtered results (dimmed border)
+
+**How to use:**
+1. Press `/` to enter search mode
+2. Type your search query - results update in real-time
+3. Press `Tab` or `Enter` to navigate the filtered results
+4. Use `↑↓` or `j/k` to move through matching sessions
+5. Press `/` again to modify your search
+6. Press `Esc` to clear search and return to all sessions
+
+**Features:**
 - Shows match count `[n]` next to each session
-- View match previews in the details pane
+- View match previews in the details pane with context
+- Search bar shows different states (focused/unfocused)
+- Persistent search results until explicitly cleared
 - Requires `ripgrep` (rg) to be installed for best performance
 
 ### Command Line Options

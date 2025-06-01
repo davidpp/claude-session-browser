@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -16,6 +17,15 @@ import (
 	"github.com/davidpaquet/claude-session-browser/internal/model"
 	"github.com/davidpaquet/claude-session-browser/internal/parser"
 	"github.com/davidpaquet/claude-session-browser/internal/search"
+)
+
+// SearchState represents the current search mode
+type SearchState int
+
+const (
+	SearchStateNormal SearchState = iota  // No search active
+	SearchStateInput                      // User is typing in search box
+	SearchStateResults                    // User is navigating filtered results
 )
 
 // Model is the app model
@@ -37,7 +47,7 @@ type Model struct {
 	
 	// Search State
 	searchEngine     search.Engine
-	searchMode       bool
+	searchState      SearchState
 	searchInput      textinput.Model
 	searchQuery      string
 	searchResults    []search.SearchResult
@@ -155,15 +165,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 		
 	case tea.KeyMsg:
-		// Handle search mode input first
-		if m.searchMode {
+		// Handle based on current search state
+		switch m.searchState {
+		case SearchStateInput:
+			// In search input mode
 			switch msg.String() {
 			case "esc":
-				m.exitSearchMode()
+				// Cancel search entirely
+				m.clearSearch()
 				return m, nil
-			case "enter":
-				// Keep search active but update selection
-				m.exitSearchMode()
+			case "tab", "enter":
+				// Exit input mode, enter results mode
+				if m.searchQuery != "" {
+					m.searchState = SearchStateResults
+					m.searchInput.Blur()
+				}
 				return m, nil
 			default:
 				// Update search input
@@ -184,56 +200,104 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, cmd
 			}
-		}
-
-		// Regular key handling
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
 			
-		case "/":
-			m.enterSearchMode()
-			return m, textinput.Blink
-			
-		case "up", "k":
-			if m.selected > 0 {
-				m.selected--
-				m.ensureVisible()
-				if m.selected < len(m.filteredSessions) {
-					return m, m.loadFullSession(m.filteredSessions[m.selected].FilePath)
+		case SearchStateResults:
+			// In search results mode - handle navigation
+			switch msg.String() {
+			case "ctrl+c", "q":
+				return m, tea.Quit
+			case "esc":
+				// Clear search and return to normal
+				m.clearSearch()
+				return m, nil
+			case "/":
+				// Return to search input mode
+				m.searchState = SearchStateInput
+				m.searchInput.Focus()
+				return m, textinput.Blink
+			case "up", "k":
+				if m.selected > 0 {
+					m.selected--
+					m.ensureVisible()
+					if m.selected < len(m.filteredSessions) {
+						return m, m.loadFullSession(m.filteredSessions[m.selected].FilePath)
+					}
 				}
+			case "down", "j":
+				if m.selected < len(m.filteredSessions)-1 {
+					m.selected++
+					m.ensureVisible()
+					if m.selected < len(m.filteredSessions) {
+						return m, m.loadFullSession(m.filteredSessions[m.selected].FilePath)
+					}
+				}
+			case "enter":
+				if m.fullSession != nil {
+					cmd := m.fullSession.GetResumeCommand()
+					if err := m.clipboardMgr.Copy(cmd); err != nil {
+						m.statusMsg = fmt.Sprintf("Copy failed: %v", err)
+					} else {
+						m.statusMsg = "Copied to clipboard!"
+					}
+					m.statusTimer = time.Now()
+					return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+						return clearStatusMsg{}
+					})
+				}
+			case "r":
+				m.loading = true
+				m.clearSearch()
+				return m, m.loadSessions()
 			}
 			
-		case "down", "j":
-			if m.selected < len(m.filteredSessions)-1 {
-				m.selected++
-				m.ensureVisible()
-				if m.selected < len(m.filteredSessions) {
-					return m, m.loadFullSession(m.filteredSessions[m.selected].FilePath)
+		default:
+			// Normal mode - no search active
+			switch msg.String() {
+			case "ctrl+c", "q":
+				return m, tea.Quit
+				
+			case "/":
+				m.enterSearchMode()
+				return m, textinput.Blink
+				
+			case "up", "k":
+				if m.selected > 0 {
+					m.selected--
+					m.ensureVisible()
+					if m.selected < len(m.filteredSessions) {
+						return m, m.loadFullSession(m.filteredSessions[m.selected].FilePath)
+					}
 				}
-			}
-			
-		case "enter":
-			if m.fullSession != nil {
-				cmd := m.fullSession.GetResumeCommand()
-				if err := m.clipboardMgr.Copy(cmd); err != nil {
-					m.statusMsg = fmt.Sprintf("Copy failed: %v", err)
-				} else {
-					m.statusMsg = "Copied to clipboard!"
+				
+			case "down", "j":
+				if m.selected < len(m.filteredSessions)-1 {
+					m.selected++
+					m.ensureVisible()
+					if m.selected < len(m.filteredSessions) {
+						return m, m.loadFullSession(m.filteredSessions[m.selected].FilePath)
+					}
 				}
-				m.statusTimer = time.Now()
-				// Clear the message after 2 seconds
-				return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
-					return clearStatusMsg{}
-				})
+				
+			case "enter":
+				if m.fullSession != nil {
+					cmd := m.fullSession.GetResumeCommand()
+					if err := m.clipboardMgr.Copy(cmd); err != nil {
+						m.statusMsg = fmt.Sprintf("Copy failed: %v", err)
+					} else {
+						m.statusMsg = "Copied to clipboard!"
+					}
+					m.statusTimer = time.Now()
+					// Clear the message after 2 seconds
+					return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+						return clearStatusMsg{}
+					})
+				}
+				
+			case "r":
+				m.loading = true
+				m.clearSearch()
+				return m, m.loadSessions()
 			}
-			
-		case "r":
-			m.loading = true
-			m.searchQuery = ""
-			m.searchMode = false
-			m.searchInput.SetValue("")
-			return m, m.loadSessions()
 		}
 	}
 	
@@ -254,7 +318,7 @@ func (m *Model) View() string {
 	// Calculate pane dimensions
 	// Reserve space for status bar and search bar if active
 	reservedHeight := 1 // status bar
-	if m.searchMode {
+	if m.searchState != SearchStateNormal {
 		reservedHeight += 3 // search bar with border
 	}
 	availableHeight := m.height - reservedHeight
@@ -276,7 +340,7 @@ func (m *Model) View() string {
 	
 	// Add search bar if in search mode
 	components := []string{main}
-	if m.searchMode {
+	if m.searchState != SearchStateNormal {
 		searchBar := m.renderSearchBar()
 		components = append(components, searchBar)
 	}
@@ -300,7 +364,7 @@ func (m *Model) renderSessionList(width, height int) string {
 	// Build content
 	lines := []string{}
 	title := "Sessions"
-	if m.searchMode || m.searchQuery != "" {
+	if m.searchState != SearchStateNormal {
 		title = fmt.Sprintf("Sessions (%d matches)", len(m.filteredSessions))
 	}
 	lines = append(lines, titleStyle.Render(title))
@@ -523,10 +587,17 @@ func (m *Model) renderStatusBar() string {
 	var content string
 	
 	// Show status message if present, otherwise show key hints
-	if m.statusMsg != "" && time.Since(m.statusTimer) < 3*time.Second {
+	statusDuration := 3 * time.Second
+	// Show ripgrep warning for longer
+	if strings.Contains(m.statusMsg, "ripgrep") {
+		statusDuration = 10 * time.Second
+	}
+	if m.statusMsg != "" && time.Since(m.statusTimer) < statusDuration {
 		content = infoStyle.Render(m.statusMsg)
-	} else if m.searchMode {
-		content = keyHelpStyle.Render("[Esc] Cancel  [Enter] Select  Type to search...")
+	} else if m.searchState == SearchStateInput {
+		content = keyHelpStyle.Render("[Tab/Enter] Navigate results  [Esc] Cancel  Type to search...")
+	} else if m.searchState == SearchStateResults {
+		content = keyHelpStyle.Render("[↑↓] Navigate  [/] Edit search  [Esc] Clear search  [Enter] Copy")
 	} else {
 		content = keyHelpStyle.Render("[↑↓] Navigate  [Enter] Copy  [/] Search  [r] Refresh  [q] Quit")
 	}
@@ -535,18 +606,42 @@ func (m *Model) renderStatusBar() string {
 }
 
 func (m *Model) renderSearchBar() string {
-	// Create search input with custom style
+	// Different styles for focused vs unfocused
+	var borderColor lipgloss.Color
+	var statusText string
+	
+	if m.searchState == SearchStateInput {
+		// Focused - bright purple border
+		borderColor = lipgloss.Color("#9B59B6")
+		statusText = ""
+	} else {
+		// Unfocused - dimmed border
+		borderColor = lipgloss.Color("#4B5563")
+		if m.searchQuery != "" && len(m.filteredSessions) == 0 {
+			statusText = " (no matches)"
+		} else if len(m.filteredSessions) > 0 {
+			statusText = fmt.Sprintf(" (%d matches)", len(m.filteredSessions))
+		}
+	}
+	
 	searchStyle := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#9B59B6")). // Purple to match theme
+		BorderForeground(borderColor).
 		Padding(0, 1).
 		Width(m.width - 2)
 	
 	searchIcon := "🔍 "
-	prompt := searchIcon + "Search: " + m.searchInput.View()
+	var prompt string
 	
-	if m.searchQuery != "" && len(m.filteredSessions) == 0 {
-		prompt += " (no matches)"
+	if m.searchState == SearchStateInput {
+		// Show cursor when focused
+		prompt = searchIcon + "Search: " + m.searchInput.View()
+	} else {
+		// Show static text when unfocused
+		prompt = searchIcon + "Search: " + m.searchQuery + statusText
+		if m.searchState == SearchStateResults {
+			prompt += " [Press / to edit]"
+		}
 	}
 	
 	return searchStyle.Render(prompt)
@@ -692,16 +787,29 @@ func getRelativeTime(t time.Time) string {
 
 // Search helper methods
 func (m *Model) enterSearchMode() {
-	m.searchMode = true
+	// Check if ripgrep is available
+	if !m.checkRipgrep() {
+		m.statusMsg = "Warning: ripgrep (rg) not found. Install it for search to work."
+		m.statusTimer = time.Now()
+		// Still enter search mode but user is warned
+	}
+	
+	m.searchState = SearchStateInput
 	m.searchInput.Focus()
-	m.searchInput.SetValue("")
-	m.searchQuery = ""
+	m.searchInput.SetValue(m.searchQuery) // Keep existing query if any
 }
 
-func (m *Model) exitSearchMode() {
-	m.searchMode = false
+func (m *Model) checkRipgrep() bool {
+	_, err := exec.LookPath("rg")
+	return err == nil
+}
+
+func (m *Model) clearSearch() {
+	m.searchState = SearchStateNormal
 	m.searchInput.Blur()
+	m.searchInput.SetValue("")
 	m.searchQuery = ""
+	m.searchResults = nil
 	// Reset to show all sessions
 	m.filteredSessions = m.sessions
 	m.selected = 0
