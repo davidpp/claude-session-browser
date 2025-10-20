@@ -86,7 +86,14 @@ func (p *Parser) ParseFullSession(filePath string) (*model.FullSession, error) {
 					messageCount++
 				}
 
-				// Collect user messages for summary
+				// Extract summary from dedicated summary line (preferred)
+				if msgType == "summary" {
+					if summary, ok := data["summary"].(string); ok && summary != "" {
+						session.Summary = summary
+					}
+				}
+
+				// Collect user messages for fallback summary
 				if msgType == "user" {
 					if msg, ok := data["message"].(map[string]interface{}); ok {
 						if content, ok := msg["content"].(string); ok {
@@ -113,8 +120,8 @@ func (p *Parser) ParseFullSession(filePath string) (*model.FullSession, error) {
 		}
 	}
 
-	// Set summary from last 3 user messages
-	if len(lastUserMessages) > 0 {
+	// Fallback: Set summary from last 3 user messages if no summary line was found
+	if session.Summary == "" && len(lastUserMessages) > 0 {
 		start := len(lastUserMessages) - 3
 		if start < 0 {
 			start = 0
