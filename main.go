@@ -12,6 +12,8 @@ import (
 	"github.com/davidpaquet/claude-session-browser/internal/ui"
 )
 
+const version = "v0.2.0"
+
 func main() {
 	// Parse command line flags
 	var claudeDir string
@@ -70,7 +72,7 @@ func main() {
 		}
 	}
 	
-	app := ui.NewApp(claudeDir)
+	app := ui.NewApp(claudeDir, version)
 	
 	// Create the Bubble Tea program
 	p := tea.NewProgram(

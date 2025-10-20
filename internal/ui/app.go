@@ -36,7 +36,8 @@ type Model struct {
 	parser        *parser.Parser
 	clipboardMgr  *clipboard.Manager
 	claudeDir     string
-	
+	version       string
+
 	// UI State
 	width         int
 	height        int
@@ -44,7 +45,7 @@ type Model struct {
 	scrollOffset  int
 	loading       bool
 	err           error
-	
+
 	// Search State
 	searchEngine     search.Engine
 	searchState      SearchState
@@ -52,14 +53,14 @@ type Model struct {
 	searchQuery      string
 	searchResults    []search.SearchResult
 	filteredSessions []model.SessionInfo
-	
+
 	// Status
 	statusMsg     string
 	statusTimer   time.Time
 }
 
 // NewApp creates a new app
-func NewApp(claudeDir string) *Model {
+func NewApp(claudeDir, version string) *Model {
 	// Initialize search input
 	searchInput := textinput.New()
 	searchInput.Placeholder = "Search sessions..."
@@ -70,6 +71,7 @@ func NewApp(claudeDir string) *Model {
 		parser:       parser.NewParser(),
 		clipboardMgr: clipboard.NewManager(),
 		claudeDir:    claudeDir,
+		version:      version,
 		loading:      true,
 		width:        80,
 		height:       24,
@@ -584,8 +586,8 @@ func (m *Model) renderDetails(width, height int) string {
 }
 
 func (m *Model) renderStatusBar() string {
-	var content string
-	
+	var leftContent string
+
 	// Show status message if present, otherwise show key hints
 	statusDuration := 3 * time.Second
 	// Show ripgrep warning for longer
@@ -593,15 +595,28 @@ func (m *Model) renderStatusBar() string {
 		statusDuration = 10 * time.Second
 	}
 	if m.statusMsg != "" && time.Since(m.statusTimer) < statusDuration {
-		content = infoStyle.Render(m.statusMsg)
+		leftContent = infoStyle.Render(m.statusMsg)
 	} else if m.searchState == SearchStateInput {
-		content = keyHelpStyle.Render("[Tab/Enter] Navigate results  [Esc] Cancel  Type to search...")
+		leftContent = keyHelpStyle.Render("[Tab/Enter] Navigate results  [Esc] Cancel  Type to search...")
 	} else if m.searchState == SearchStateResults {
-		content = keyHelpStyle.Render("[↑↓] Navigate  [/] Edit search  [Esc] Clear search  [Enter] Copy")
+		leftContent = keyHelpStyle.Render("[↑↓] Navigate  [/] Edit search  [Esc] Clear search  [Enter] Copy")
 	} else {
-		content = keyHelpStyle.Render("[↑↓] Navigate  [Enter] Copy  [/] Search  [r] Refresh  [q] Quit")
+		leftContent = keyHelpStyle.Render("[↑↓] Navigate  [Enter] Copy  [/] Search  [r] Refresh  [q] Quit")
 	}
-	
+
+	// Add version to the right
+	rightContent := keyHelpStyle.Render(m.version)
+
+	// Calculate spacing to push version to the right
+	leftWidth := lipgloss.Width(leftContent)
+	rightWidth := lipgloss.Width(rightContent)
+	spacing := m.width - leftWidth - rightWidth
+	if spacing < 0 {
+		spacing = 0
+	}
+
+	content := leftContent + strings.Repeat(" ", spacing) + rightContent
+
 	return statusBarStyle.Width(m.width).Render(content)
 }
 
