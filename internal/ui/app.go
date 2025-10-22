@@ -586,7 +586,7 @@ func (m *Model) renderDetails(width, height int) string {
 }
 
 func (m *Model) renderStatusBar() string {
-	var leftContent string
+	var leftText string
 
 	// Show status message if present, otherwise show key hints
 	statusDuration := 3 * time.Second
@@ -595,27 +595,24 @@ func (m *Model) renderStatusBar() string {
 		statusDuration = 10 * time.Second
 	}
 	if m.statusMsg != "" && time.Since(m.statusTimer) < statusDuration {
-		leftContent = infoStyle.Render(m.statusMsg)
+		leftText = m.statusMsg
 	} else if m.searchState == SearchStateInput {
-		leftContent = keyHelpStyle.Render("[Tab/Enter] Navigate results  [Esc] Cancel  Type to search...")
+		leftText = "[Tab/Enter] Navigate results  [Esc] Cancel  Type to search..."
 	} else if m.searchState == SearchStateResults {
-		leftContent = keyHelpStyle.Render("[↑↓] Navigate  [/] Edit search  [Esc] Clear search  [Enter] Copy")
+		leftText = "[↑↓] Navigate  [/] Edit search  [Esc] Clear search  [Enter] Copy"
 	} else {
-		leftContent = keyHelpStyle.Render("[↑↓] Navigate  [Enter] Copy  [/] Search  [r] Refresh  [q] Quit")
+		leftText = "[↑↓] Navigate  [Enter] Copy  [/] Search  [r] Refresh  [q] Quit"
 	}
 
-	// Add version to the right
-	rightContent := keyHelpStyle.Render(m.version)
+	// Create left and right content sections
+	leftStyle := keyHelpStyle.Width(m.width - lipgloss.Width(m.version) - 2)
+	rightStyle := keyHelpStyle.Align(lipgloss.Right)
 
-	// Calculate spacing to push version to the right
-	leftWidth := lipgloss.Width(leftContent)
-	rightWidth := lipgloss.Width(rightContent)
-	spacing := m.width - leftWidth - rightWidth
-	if spacing < 0 {
-		spacing = 0
-	}
+	leftContent := leftStyle.Render(leftText)
+	rightContent := rightStyle.Render(m.version)
 
-	content := leftContent + strings.Repeat(" ", spacing) + rightContent
+	// Join horizontally with bottom alignment
+	content := lipgloss.JoinHorizontal(lipgloss.Bottom, leftContent, rightContent)
 
 	return statusBarStyle.Width(m.width).Render(content)
 }
